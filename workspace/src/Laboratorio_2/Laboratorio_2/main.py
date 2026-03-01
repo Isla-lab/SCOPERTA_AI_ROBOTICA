@@ -49,8 +49,8 @@ class LimoYoloNode(Node):
         # ----------------------------------------------------
         self.declare_parameter("image_topic", "/image")
         self.declare_parameter("model", "yolov8n.pt")
-        self.declare_parameter("score_thresh", 0.5)               # Soglia di confidenza minima per non scartare una predizione
-        self.declare_parameter("filter_class", "sports ball")     # Classe target da individuare: può essere cambiata a "elephant" (# TODO)
+        self.declare_parameter("score_thresh", 0.7)               # Soglia di confidenza minima per non scartare una predizione
+        self.declare_parameter("filter_class", "sports ball")     # Classe target da individuare
         self.declare_parameter("bb_ratio_threshold", 0.03)        # Rapporto tra area della bounding box e area dell'immagine necessario al robot per fermarsi
         self.declare_parameter("turn_speed_max", 1.5)             # Velocità di rotazione massima
 
@@ -89,9 +89,9 @@ class LimoYoloNode(Node):
         
         # Parametri per il centraggio 
         # La "deadband" evita che il robot oscilli continuamente a destra e sinistra
-        self.center_deadband_ratio = 0.1 # Tolleranza centrale (10% della larghezza immagine)
-        self.target_centered = False    # True se il target è dentro la zona centrale
-        self.center_turn_speed = 0.4    # Velocità angolare di rotazione (rad/s)
+        self.center_deadband_ratio = 0.1    # Tolleranza centrale (10% della larghezza immagine)
+        self.target_centered = False        # True se il target è dentro la zona centrale
+        self.center_turn_speed = 0.4        # Velocità angolare di rotazione (rad/s)
 
         # ----------------------------------------------------
         # ROS I/O
@@ -278,32 +278,44 @@ class LimoYoloNode(Node):
             x1, y1, x2, y2 = xyxy[i]
 
             # Estrae la confidenza per l'elemento corrente
-            score = None    # TODO
+            score = float(conf[i])
+
+            # Estrae la classe per l'elemento corrente
+            cls_name = str(self.model_names.get(int(cls_ids[i]), "unknown")).lower()
+
+            # Considera solo gli elementi appartenenti alla classe target
+            if cls_name != target_class:
+                continue
             
-            # Considera l'elemento corrente solo se la soglia di confidenza è sufficientemente elevata, 
-            # altrimenti scarta l'elemento e passa al prossimo
-            # TODO
+            # Considera l'elemento corrente solo se la soglia di confidenza è sufficientemente elevata
+            if not self.target_detected and score < threshold_score:
+                continue
             
             # Rilassa la soglia di confidenza se il bersaglio è stato già individuato (per stabilità)
             if self.target_detected and score < (threshold_score / 2):
                 continue
 
             # L'obiettivo è stato individuato correttamente
-            self.target_confidence = None   # TODO
+            self.target_confidence = score
             self.target_last_seen_time = time.time()
 
             # Calcola il centro della bounding box
-            # TODO: salvare le coordinate del centro in (self.target_cx, self.target_cy)
-
+            self.target_cx = int((x1 + x2) / 2)
+            self.target_cy = int((y1 + y2) / 2)
 
             # Calcola larghezza e altezza del box in pixel
+            box_w = x2 - x1
+            box_h = y2 - y1
 
-            self.target_box_ratio = None    # TODO
+            # Calcola il rapporto di area 
+            image_area = image_w * image_h
+            target_area = box_w * box_h
+            self.target_box_ratio = target_area / image_area
 
             # Debug log per vedere quanto spazio occupa
             self.get_logger().info(f"Target ratio: {self.target_box_ratio:.4f}")
 
-            self.target_detected = None     # TODO
+            self.target_detected = True
 
             return
 
@@ -328,26 +340,23 @@ class LimoYoloNode(Node):
             return
 
         # Se il bersaglio non è individuato da almeno un secondo, è considerato perso
-        if True:    # TODO
+        if now - self.target_last_seen_time > 1:
             self.target_detected = False
             self.target_box_ratio = None
             self.target_centered = False
 
         # Se il bersaglio non è stato individuato, ruota sul posto
-        if None:    # TODO
+        if not self.target_detected:
             self.stopped = False
-
-            # TODO: ruotare
-
+            self.publish_twist(0.0, 0.4) # Ruota in cerca (0.4 rad/s)
             return
         
         # Altrimmenti, allinea il robot al centro della bounding box
         if not self.target_centered:
-            error = None    # TODO
+            error = self.compute_center_error()
 
             # Deadband: il target è stato centrato
-            if None:    # TODO: controlla se il target è stato centrato
-                
+            if abs(error) < self.center_deadband_ratio:
                 self.publish_stop()
 
                 self.get_logger().info(f"TARGET CENTERED")
@@ -364,25 +373,22 @@ class LimoYoloNode(Node):
                             -self.turn_speed_max)
 
             # Ruota
-            # TODO: usare angular_z
+            self.publish_twist(0.0, angular_z)
 
             return
 
         # Controlla se la bounding box è abbastanza grande -> il robot è abbastanza vicino
         if self.target_box_ratio is not None:
+            if self.target_box_ratio >= self.bb_ratio_threshold:
+                self.stopped = True
+                self.publish_stop()
 
-            # TODO: se il rapporto tra bounding box e area dell'immagine è abbastanza grande: 
-            # a. Pubblicare messaggio di stop per il robot
-            # b. Aggiornare la flag self.stopped
-            # c. Ritornare
-
-            pass    # TODO
+                return
 
 
         # Altrimenti avanza
         self.stopped = False
-        
-        # TODO: avanza
+        self.publish_twist(0.4, 0.0) # Avanza lentamente
 
     # ----------------------------------------------------
     # METODI DI SUPPORTO

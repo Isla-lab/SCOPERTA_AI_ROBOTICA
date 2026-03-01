@@ -31,7 +31,6 @@ class FiniteStateMachine(Node):
         self.declare_parameter("filter_class", "sports ball")   # Classe target da individuare
         self.declare_parameter("turn_speed_max", 1.5)           # Velocità angolare massima
         self.declare_parameter("bb_ratio_threshold", 0.03)      # Rapporto tra bounding box e immagine da usare come proxy di distanza
-        self.declare_parameter("search_straight_distance", 0.8) # Spazio da percorrere in rettilineo in fase FORWARD
 
         self.img_topic = self.get_parameter("image_topic").value
         self.model_path = self.get_parameter("model").value
@@ -39,7 +38,6 @@ class FiniteStateMachine(Node):
         self.filter_class = self.get_parameter("filter_class").value.lower()
         self.turn_speed_max = self.get_parameter("turn_speed_max").value
         self.bb_ratio_threshold = self.get_parameter("bb_ratio_threshold").value
-        self.search_straight_distance = self.get_parameter("search_straight_distance").value
 
         # CAMERA E IMMAGINE
         self.image_w = None         # Ampiezza immagine (width)
@@ -57,10 +55,10 @@ class FiniteStateMachine(Node):
 
         # CONTROLLO MOVIMENTO
         self.rate_hz = 20
-        self.forward_speed = 0.3        # Velocità lineare
+        self.forward_speed = 0.3              # Velocità lineare
         self.center_deadband_ratio = 0.1      # ±10% of image width
         self.center_turn_speed = 0.4
-        self.align_tol = 0.05           # Errore tollerato in fase di riallineamento
+        self.align_tol = 0.05                 # Errore tollerato in fase di riallineamento
 
         # VARIABILE DI STATO
         self.state = "FORWARD"  # Indica lo stato interno della FSM
@@ -76,6 +74,9 @@ class FiniteStateMachine(Node):
         self.starting_y = None
         self.starting_yaw = None
 
+        # SEARCH E SCAN
+        self.search_straight_distance = 0.8 # Distanza in rettilineo da percorrere in fase "FORWARD"
+
         # Odometria di partenza per la fase di ricerca
         self.search_start_x = None
         self.search_start_y = None
@@ -89,11 +90,6 @@ class FiniteStateMachine(Node):
         self.right_target_yaw = None
         self.left_target_yaw = None
         self.realigning_target_yaw = None
-
-        # Odometria di partenza in fase di evitamento ostacolo
-        self.start_avoiding_x = None
-        self.start_avoiding_y = None
-        self.start_avoiding_yaw = None
 
         # Logica di stop
         self.stopped = False
@@ -340,32 +336,41 @@ class FiniteStateMachine(Node):
 
         for i in range(len(xyxy)):
             x1, y1, x2, y2 = xyxy[i]
-
-            score = None    # TODO
-            cls_idx = None  # TODO
-            cls_name = str(self.model_names.get(int(cls_idx), "unknown")).lower()
+            score = float(conf[i])
+            cls_name = str(self.model_names.get(int(cls_ids[i]), "unknown")).lower()
 
             # Debug
             # self.get_logger().info(f"Detected: {cls_name} (score={score:.2f})")
 
             # Prosegue solo se classe e confidenza sono corrette
-            # TODO
+            if cls_name != target_class or score < threshold_score:
+                continue
+            
+            if (not self.target_detected and score < threshold_score) or \
+               (self.target_detected and score < (threshold_score / 2)):
+                continue
 
             # Il target è stato individuato
-            self.target_confidence = None   # TODO
+            self.target_confidence = score
             self.target_last_seen_time = time.time()
 
             # Aggiorna il centro del target
-            self.target_cx = None   # TODO
-            self.target_cy = None   # TODO
+            self.target_cx = int((x1 + x2) / 2)
+            self.target_cy = int((y1 + y2) / 2)
+
+            # Calcola larghezza e altezza del box in pixel
+            box_w = x2 - x1
+            box_h = y2 - y1
 
             # Calcola il rapporto di area 
-            self.target_box_ratio = None    # TODO
+            image_area = image_w * image_h
+            target_area = box_w * box_h
+            self.target_box_ratio = target_area / image_area
 
             # Debug log 
             # self.get_logger().info(f"Target ratio: {self.target_box_ratio:.4f}")
 
-            self.target_detected = None     # TODO
+            self.target_detected = True
 
             return
 
@@ -391,20 +396,20 @@ class FiniteStateMachine(Node):
         """
         
         # Controllo di sicurezza: se lo stato interno non è FORWARD -> ritorna subito
-        # TODO
+        if self.state != "FORWARD": 
+            return
 
         # Salva odometria di partenza  
         if self.search_start_x is None:
-            self.search_start_x = None      # TODO
-            self.search_start_y = None      # TODO
-            self.search_start_yaw = None    # TODO
+            self.search_start_x = self.x
+            self.search_start_y = self.y
+            self.search_start_yaw = self.yaw
 
         # Avanza per la distanza indicata, poi passa allo stato "SCAN"
-        d = None    # TODO: calcola la distanza percorsa da (self.search_start_x, search_start_y)
+        d = self.distance_from_point(self.search_start_x, self.search_start_y)
 
         if d >= self.search_straight_distance:
-            
-            # TODO: invia comando per fermare il robot
+            self.publish_stop()
 
             # Resetta i parametri di scansione 
             self.turning_right = True
@@ -420,12 +425,12 @@ class FiniteStateMachine(Node):
             self.search_start_y = None
             self.search_start_yaw = None
 
-            self.state = None   # TODO
+            self.state = "SCAN"
 
             return
 
         # Altrimenti, prosegue dritto
-        # TODO
+        self.publish_twist(self.forward_speed, 0.0)
 
         return
 
@@ -445,19 +450,19 @@ class FiniteStateMachine(Node):
            proseguire l'esplorazione in linea retta.
         """
         # Controllo di sicurezza: se lo stato interno non è SCAN -> ritorna immediatamente
-        # TODO
+        if self.state != "SCAN":
+            return
 
         # Gira a destra
         if self.turning_right:
 
             if self.right_target_yaw is None:
-                self.start_spinning_yaw = None  # TODO: salva l'orientamento corrente per il successivo riallineamento
+                self.start_spinning_yaw = self.yaw  # Salva l'orientamento corrente per il successivo riallineamento
                 self.right_target_yaw = self.yaw - math.pi / 4
 
             # Se ha raggiunto l'ampiezza desiderata, smette di ruotare
-            if None:   # TODO: l'errore angolare deve essere inferiore a self.align_tol
-                
-                # TODO: ferma il robot
+            if abs(self.angle_error(self.right_target_yaw)) < self.align_tol:
+                self.publish_stop()
 
                 # Aggiorna le variabili interne
                 self.right_target_yaw = None
@@ -478,10 +483,8 @@ class FiniteStateMachine(Node):
                 self.left_target_yaw = self.start_spinning_yaw + math.pi / 4
 
             # Se ha raggiunto l'ampiezza desiderata, smette di ruotare
-            if None:    # TODO
-                
-                # TODO: ferma il robot
-
+            if abs(self.angle_error(self.left_target_yaw)) < 0.05:
+                self.publish_stop()
                 self.left_target_yaw = None
                 self.realigning = True
                 self.turning_left = False
@@ -500,7 +503,7 @@ class FiniteStateMachine(Node):
                 self.realigning_target_yaw = self.start_spinning_yaw
 
             # Se ha completato il riallineamento: smette di ruotare e torna allo stato FORWARD
-            if None:    # TODO
+            if abs(self.angle_error(self.realigning_target_yaw)) < self.align_tol:
                 self.publish_stop()
                 self.realigning_target_yaw = None
                 self.realigning = False
@@ -510,7 +513,7 @@ class FiniteStateMachine(Node):
                 self.search_start_y = None
                 self.search_start_yaw = None
 
-                self.state = None   # TODO
+                self.state = "FORWARD"
 
                 return
             
@@ -533,14 +536,12 @@ class FiniteStateMachine(Node):
         - Altrimenti, continua ad avanzare verso il target a velocità costante.
         """
         
+        # Controlla se la bounding box è abbastanza grande -> il robot è abbastanza vicino
         if self.target_box_ratio is not None:
-
-            # TODO: se il robot è abbastanza vicino al target:
-            # a. ferma il robot
-            # b. cambia stato interno
-            # c. ritorna
-
-            pass    # TODO
+            if self.target_box_ratio >= self.bb_ratio_threshold:
+                self.publish_stop()
+                self.state = "INTERACT"
+                return
 
         # Altrimenti prosegue dritto 
         self.publish_twist(self.forward_speed, 0.0)
@@ -556,8 +557,10 @@ class FiniteStateMachine(Node):
         2. Invia un log informativo indicando il completamento del task.
         3. Imposta il flag 'self.stopped' su True per interrompere il loop di controllo.
         """
-
-        # TODO
+        self.publish_stop()
+        # Pubblica un messaggio finale
+        self.get_logger().info(f"Reached {self.filter_class}. Task completed...")
+        self.stopped = True
 
         return
 
@@ -580,19 +583,18 @@ class FiniteStateMachine(Node):
             self.publish_stop()
             return
 
-        error = None    # TODO: calcola l'errore tra centro della bounding box e centro della camera
+        error = self.compute_center_error()
 
         # Deadband: il target è centrato
-        if None:    # TODO
+        if abs(error) < self.center_deadband_ratio:
             self.publish_stop()
 
             # Debug
             # self.get_logger().info(f"TARGET CENTERED: switching to APPROACH")
 
-            self.target_centered = None     # TODO
+            self.target_centered = True
 
-            self.state = None   # TODO
-
+            self.state = "APPROACH"
             return
 
         # Rotazione proporzionale
@@ -602,7 +604,7 @@ class FiniteStateMachine(Node):
         angular_z = max(min(angular_z, self.turn_speed_max),
                         -self.turn_speed_max)
 
-        # TODO: ruota il robot
+        self.publish_twist(0.0, angular_z)
 
 
     # -----------------------------
@@ -614,20 +616,20 @@ class FiniteStateMachine(Node):
         Gestisce la logica decisionale del robot e le transizioni tra gli stati.
 
         Il metodo opera secondo la seguente gerarchia di priorità:
-        1. VALIDAZIONE DATI: Verifica la disponibilità di odometria e dati LiDAR.
+        1. VALIDAZIONE DATI: Verifica la disponibilità di odometria.
         2. SICUREZZA: Se il robot è in stato di arresto ('stopped'), pubblica velocità nulla.
         3. GESTIONE TARGET PERSO: Se il target non viene rilevato per più di 1 secondo, 
            resetta i parametri di inseguimento e forza il ritorno allo stato "SCAN".
         4. AGGANCIO TARGET: Se il target è visibile ma non centrato, imposta lo 
            stato "CENTER_TARGET" (a meno che non si sia già in fase di approccio finale).
-        5. ESECUZIONE FSM: Smista l'esecuzione ai metodi specifici ("AVOID", "APPROACH", 
+        5. ESECUZIONE FSM: Smista l'esecuzione ai metodi specifici ("APPROACH", 
            "FORWARD", "SCAN", "CENTER_TARGET", "INTERACT") in base allo stato attivo.
         """
 
         now = time.time()
 
         # Attende odometria
-        if self.x is None or self.yaw is None or self.ranges is None:
+        if self.x is None or self.yaw is None:
             self.publish_stop()
             return
         
@@ -661,13 +663,16 @@ class FiniteStateMachine(Node):
 
 
         # Logica di macchina a stati finiti (FSM)
-        # TODO: chiama il metodo appropriato in base allo stato corrente.
-        # Stati possibili:
-        # a. FORWARD: muove il robot in rettilineo
-        # b. SCAN: esegue scansione
-        # c. CENTER_TARGET: centra il target nell'immagine della camera
-        # d. APPROACH: avanza in rettilineo verso il target
-        # e. INTERACT: esegue un'azione una volta raggiunto il target (es. stampa un messaggio)
+        if self.state == "APPROACH":
+            self.approach()
+        elif self.state == "FORWARD": 
+            self.move_forward()
+        elif self.state == "SCAN":
+            self.scan()
+        elif self.state == "CENTER_TARGET":
+            self.align_to_target()
+        elif self.state == "INTERACT":
+            self.interact()
         
         return
 

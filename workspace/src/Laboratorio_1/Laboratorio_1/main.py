@@ -56,7 +56,7 @@ class Turtlebot3SquarePath(Node):
     Un nodo ROS 2 che controlla un TurtleBot3 per eseguire percorsi geometrici di base 
     utilizzando l'odometria.
 
-    Gestisce la ricezione dell'odometria e la pubblicazione dei comandi di velocità.
+    Gestisce l'abbonamento all'odometria e la pubblicazione dei comandi di velocità.
     """
     def __init__(self):
         super().__init__('turtlebot3_square_path_node')
@@ -205,7 +205,7 @@ class Turtlebot3SquarePath(Node):
                 continue
 
             error = normalize_angle(target_yaw - self.yaw)
-            if abs(error) < math.radians(1.5): # Tolleranza di 1.5 gradi
+            if abs(error) < math.radians(1.5): # Tollernaza di 1.5 gradi
                 break
 
             k = 1.2 # Guadagno Proporzionale (P)
@@ -218,7 +218,7 @@ class Turtlebot3SquarePath(Node):
         time.sleep(0.05)
 
     # -------------------------------------------------------------------
-    # Funzioni di alto livello (TODO)
+    # High-level trajectories
     # -------------------------------------------------------------------
     def run_square_path(self, side_length, duration, per_rot_duration=0.3):
         """
@@ -232,41 +232,38 @@ class Turtlebot3SquarePath(Node):
             per_rot_duration (float): Frazione della durata totale dedicata alla rotazione
                                       (e.g., 0.3 significa 30% del tempo totale).
         """
-
-        # Attende odometria
         if not self.wait_for_odom(timeout=10.0):
             self.get_logger().error('No odom received — cannot start square.')
             return
 
         self.get_logger().info('Starting square path.')
 
-        # Inizializza numero di lati e ampiezza degli angoli del quadrato
         n_sides = 4
-        angle = math.pi / 2 # 90 gradi in radianti
+        angle = math.pi / 2 # 90 gradi
 
         # Allocazione del tempo
-        # TODO: calcolare il tempo da dedicare a ogni rettilineo e ad ogni rotazione
+        total_rot_time = per_rot_duration * duration
+        total_straight_time = duration - total_rot_time
+
+        rot_time = total_rot_time / n_sides
+        straight_time = total_straight_time / n_sides
 
         # Calcolo delle velocità
-        # TODO: calcolare velocità lineare e angolare in base al tempo, alla lunghezza dei lati e all'ampiezza degli angoli
+        linear_vel = side_length / straight_time
+        angular_vel = angle / rot_time
 
-
-        # Alterna rettilinei e rotazioni per seguire un percorso quadrato
         for i in range(n_sides):
             if not rclpy.ok() or not self.is_running:
                 break
 
             self.get_logger().info(f'Side {i+1}/4: move {side_length:.2f} m')
-            
-            # TODO: muovere il robot in rettilineo per la lunghezza del lato
+            self.move_distance(side_length, linear_vel)
 
             self.get_logger().info(f'Side {i+1}/4: rotate 90°')
-
-            # TODO: far ruotare il robot per l'ampiezza dell'angolo (in radianti)
+            self.rotate_angle(angle, angular_vel)
 
         self.publish_stop()
         self.get_logger().info('Completed square path.')
-
 
     def follow_polygon(self, n_edges, side_length, duration, per_rot_duration=0.3):
         """
@@ -280,8 +277,6 @@ class Turtlebot3SquarePath(Node):
             duration (float): Durata totale desiderata del percorso (s).
             per_rot_duration (float): Frazione della durata totale dedicata alla rotazione.
         """
-
-        # Attende odometria
         if not self.wait_for_odom(timeout=10.0):
             self.get_logger().error('No odom — cannot start polygon.')
             return
@@ -289,24 +284,27 @@ class Turtlebot3SquarePath(Node):
         self.get_logger().info(f'Starting polygon with {n_edges} edges.')
 
         # Allocazione del tempo
-        # TODO: calcolare il tempo da dedicare a ogni rettilineo e ad ogni rotazione
+        total_rot_time = per_rot_duration * duration
+        total_straight_time = duration - total_rot_time
 
-        # Calcolo dell'angolo del poligono
-        external_angle = None # TODO
+        rot_time = total_rot_time / n_edges
+        straight_time = total_straight_time / n_edges
+
+        external_angle = 2.0 * math.pi / n_edges
 
         # Calcolo delle velocità
-        # TODO: calcolare velocità lineare e angolare
+        linear_vel = side_length / straight_time
+        angular_vel = external_angle / rot_time
 
         for i in range(n_edges):
             if not rclpy.ok() or not self.is_running:
                 break
 
-            # TODO: muovere il robot in rettilineo (lato)
-            # TODO: far ruotare il robot (angolo)
+            self.move_distance(side_length, linear_vel)
+            self.rotate_angle(external_angle, angular_vel)
 
         self.publish_stop()
         self.get_logger().info('Completed polygon path.')
-
 
     def follow_circle(self, radius, duration):
         """
@@ -324,19 +322,17 @@ class Turtlebot3SquarePath(Node):
         self.get_logger().info(f'Starting circular path: radius={radius} m, duration={duration}s')
 
         # Calcola le velocità per completare un giro in 'duration' secondi.
-        linear_vel = None  # TODO
-        angular_vel = None # TODO
+        linear_vel = 2.0 * math.pi * radius / duration
+        angular_vel = 2.0 * math.pi / duration
 
         rate_dt = 1.0 / self.rate_hz
         steps = int(duration * self.rate_hz)
 
-        # Segue il percorso
         for _ in range(steps):
             if not rclpy.ok() or not self.is_running:
                 break
 
-            # TODO
-
+            self.publish_twist(linear=linear_vel, angular=angular_vel)
             time.sleep(rate_dt)
 
         self.publish_stop()
@@ -355,7 +351,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = Turtlebot3SquarePath()
 
-    # Thread in background per ricevere odometria
+    # spin in background so odom updates
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 

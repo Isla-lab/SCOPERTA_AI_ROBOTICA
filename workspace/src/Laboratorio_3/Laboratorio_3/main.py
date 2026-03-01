@@ -12,8 +12,8 @@ import os
 os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
 
 import time
-import cv2                                          # type: ignore
-import numpy as np                                  # type: ignore
+import cv2
+import numpy as np
 import rclpy                                        # type: ignore
 from rclpy.node import Node                         # type: ignore
 
@@ -78,12 +78,17 @@ class ObstacleAvoidanceNode(Node):
         # Aggiorna campo interno
         self.ranges = ranges
 
+        # Considera un arco frontale -30/+30 gradi
+        n = len(ranges)
+        center = n // 2
+        
+        # Assume che il centro (center) sia 0 gradi (frontale)
+        window_size = 30 # gradi da ciascun lato del centro
+        
+        window = ranges[center - window_size : center + window_size] 
 
-        # TODO: considerando un arco frontale di -30/+30 indici, estrarre la distanza minima presente in tale intervallo
-        min_distance = None # TODO
-
-
-        self.current_distance = min_distance
+        # Ottiene la distanza minima nell'arco considerato
+        self.current_distance = np.nanmin(window)
 
 
     def detect_obstacle(self, threshold_dist=0.4):
@@ -97,8 +102,9 @@ class ObstacleAvoidanceNode(Node):
         """
         
         # Controlla se il robot deve evitare un ostacolo
-
-        # TODO
+        if self.current_distance < threshold_dist:
+            self.obstacle_detected = True
+            return
         
         self.obstacle_detected = False
 
@@ -119,18 +125,29 @@ class ObstacleAvoidanceNode(Node):
         self.obstacle_detected = False
 
         # Controlla se vi sono ostacoli vicini
-        # TODO
+        self.detect_obstacle()
 
         # Se un ostacolo è stato rilevato: gira
         if self.obstacle_detected:
 
-            # TODO: identifica la metà più libera del campo visivo del robot
+            # Identifica la direzione più libera
+            n = len(self.ranges)
+            center = n // 2
 
-            left_min_distance = None  # TODO: distanza min nella metà sinistra
-            right_min_distance = None # TODO: distanza min nella metà destra
+            # Divide la scansione in metà sinistra e metà destra
+            left_window = self.ranges[:center]
+            right_window = self.ranges[center:]
 
-            # Stabilire il senso di rotazione (orario o antiorario)
-            direction = None    # TODO
+            left_min_distance = np.nanmin(left_window)      # Distanza min nella metà sinistra
+            right_min_distance = np.nanmin(right_window)    # Distanza min nella metà destra
+
+            # Scegli la direzione con la distanza minima maggiore (spazio più aperto)
+            if left_min_distance > right_min_distance:
+                # Rotazione in senso antiorario (CCW) verso sinistra (direzione positiva in Z)
+                direction = 1   
+            else:
+                # Rotazione in senso orario (CW) verso destra (direzione negativa in Z)
+                direction = -1
 
             # Ruota
             self.publish_twist(0.0, 0.5 * direction)
@@ -138,7 +155,7 @@ class ObstacleAvoidanceNode(Node):
             return
         
         # Altrimenti, prosegue dritto
-        self.publish_twist(0.4, 0)
+        self.publish_twist(0.8, 0)
 
             
 
